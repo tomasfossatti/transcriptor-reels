@@ -1,28 +1,42 @@
+import json
 import os
-import re
 import shutil
+import subprocess
+import sys
 import tempfile
 
-import ctranslate2
 from flask import Flask, jsonify, render_template, request
 import yt_dlp
-from faster_whisper import WhisperModel
 
 app = Flask(__name__)
 
-# tiny / base / small: a mayor modelo, mejor calidad pero más lento y más RAM.
-# "base" es un buen equilibrio para una compu sin GPU.
-WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
+WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")
 
-_model = None
-_translator = None
+# La transcripcion y la traduccion corren en subprocesos aparte (worker.py)
+# en vez de en el proceso de Flask. Un proceso que termina le devuelve TODA
+# su memoria al sistema operativo, algo que no se puede garantizar con
+# del/gc.collect() en un proceso Python de larga duracion (el allocator de
+# ctranslate2 puede retener memoria). En un host de 512MB (free tier de
+# Render) es la unica forma confiable de que whisper y el traductor nunca
+# queden residentes en memoria al mismo tiempo.
 
 
-def get_model():
-    global _model
-    if _model is None:
-        _model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
-    return _model
+def run_worker(args, input_text=None):
+    proc = subprocess.run(
+        [sys.executable, WORKER_PATH] + args,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=280,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "Error en el worker")
+
+    for line in reversed(proc.stdout.splitlines()):
+        if line.startswith("###RESULT###"):
+            return json.loads(line[len("###RESULT###"):])
+
+    raise RuntimeError("El worker no devolvio un resultado valido.")
 
 
 def download_audio(url, out_dir):
@@ -55,87 +69,13 @@ def download_audio(url, out_dir):
 
 
 def transcribe_audio(audio_path):
-    model = get_model()
-    segments, info = model.transcribe(audio_path, beam_size=5)
-    text = " ".join(segment.text.strip() for segment in segments)
-    return text.strip(), info.language
-
-
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-
-
-def _split_sentences(text):
-    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
-    return sentences or [text]
-
-
-def get_translator_package():
-    """Descarga (si hace falta) el paquete en->es de Argos y lo carga
-    usando solo ctranslate2 + sentencepiece, sin pasar por
-    argostranslate.translate (que importa stanza/torch y dispara OOM
-    en hosts con poca RAM, como el free tier de Render)."""
-    global _translator
-    if _translator is not None:
-        return _translator
-
-    import argostranslate.package
-
-    pkg = next(
-        (
-            p
-            for p in argostranslate.package.get_installed_packages()
-            if p.from_code == "en" and p.to_code == "es"
-        ),
-        None,
-    )
-
-    if pkg is None:
-        argostranslate.package.update_package_index()
-        available = argostranslate.package.get_available_packages()
-        available_pkg = next(
-            p for p in available if p.from_code == "en" and p.to_code == "es"
-        )
-        download_path = available_pkg.download()
-        argostranslate.package.install_from_path(download_path)
-        pkg = next(
-            p
-            for p in argostranslate.package.get_installed_packages()
-            if p.from_code == "en" and p.to_code == "es"
-        )
-
-    model_path = str(pkg.package_path / "model")
-    translator = ctranslate2.Translator(model_path, device="cpu")
-    _translator = (translator, pkg)
-    return _translator
+    result = run_worker(["transcribe", audio_path])
+    return result["transcript"], result["language"]
 
 
 def translate_to_spanish(text):
-    translator, pkg = get_translator_package()
-
-    sentences = _split_sentences(text)
-    tokenized = [pkg.tokenizer.encode(s) for s in sentences]
-
-    target_prefix = None
-    if pkg.target_prefix:
-        target_prefix = [[pkg.target_prefix]] * len(tokenized)
-
-    results = translator.translate_batch(
-        tokenized,
-        target_prefix=target_prefix,
-        replace_unknowns=True,
-        max_batch_size=32,
-        beam_size=4,
-    )
-
-    translated_sentences = []
-    for result in results:
-        tokens = result.hypotheses[0]
-        value = pkg.tokenizer.decode(tokens)
-        if pkg.target_prefix and value.startswith(pkg.target_prefix):
-            value = value[len(pkg.target_prefix):]
-        translated_sentences.append(value.strip())
-
-    return " ".join(translated_sentences)
+    result = run_worker(["translate"], input_text=text)
+    return result["translation"]
 
 
 @app.route("/")
