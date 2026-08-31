@@ -20,6 +20,14 @@ COPY . .
 ENV WHISPER_MODEL=tiny
 ENV PORT=10000
 
+# Evita que MKL/OpenMP/OpenBLAS reserven buffers por cada CPU del host
+# fisico (no la cuota real del contenedor), lo que dispara la RAM usada.
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV TOKENIZERS_PARALLELISM=false
+
 EXPOSE 10000
 
 CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 1 --timeout 300 app:app"]

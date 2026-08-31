@@ -10,6 +10,20 @@ import os
 import re
 import sys
 
+# Fuerza a las librerias nativas (MKL/OpenMP/OpenBLAS/tokenizers) a usar un
+# solo thread. Sin esto, suelen detectar la cantidad de CPUs del HOST fisico
+# (no la cuota real del contenedor) y reservan buffers por cada una,
+# disparando el uso de RAM en hosts como el free tier de Render. Tiene que
+# setearse ANTES de importar ctranslate2/numpy/tokenizers.
+for _var in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(_var, "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL", "base")
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -30,7 +44,7 @@ def cmd_transcribe(audio_path):
         cpu_threads=1,
         num_workers=1,
     )
-    segments, info = model.transcribe(audio_path, beam_size=5)
+    segments, info = model.transcribe(audio_path, beam_size=2)
     text = " ".join(segment.text.strip() for segment in segments)
     return {"transcript": text.strip(), "language": info.language}
 
@@ -84,7 +98,7 @@ def cmd_translate(text):
         target_prefix=target_prefix,
         replace_unknowns=True,
         max_batch_size=32,
-        beam_size=4,
+        beam_size=2,
     )
 
     translated_sentences = []
