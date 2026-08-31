@@ -1,7 +1,9 @@
 import os
+import re
 import shutil
 import tempfile
 
+import ctranslate2
 from flask import Flask, jsonify, render_template, request
 import yt_dlp
 from faster_whisper import WhisperModel
@@ -59,37 +61,81 @@ def transcribe_audio(audio_path):
     return text.strip(), info.language
 
 
-def get_translator():
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text):
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+    return sentences or [text]
+
+
+def get_translator_package():
+    """Descarga (si hace falta) el paquete en->es de Argos y lo carga
+    usando solo ctranslate2 + sentencepiece, sin pasar por
+    argostranslate.translate (que importa stanza/torch y dispara OOM
+    en hosts con poca RAM, como el free tier de Render)."""
     global _translator
     if _translator is not None:
         return _translator
 
     import argostranslate.package
-    import argostranslate.translate
 
-    installed = argostranslate.translate.get_installed_languages()
-    en_lang = next((l for l in installed if l.code == "en"), None)
-    es_lang = next((l for l in installed if l.code == "es"), None)
+    pkg = next(
+        (
+            p
+            for p in argostranslate.package.get_installed_packages()
+            if p.from_code == "en" and p.to_code == "es"
+        ),
+        None,
+    )
 
-    if en_lang is None or es_lang is None:
+    if pkg is None:
         argostranslate.package.update_package_index()
         available = argostranslate.package.get_available_packages()
-        package = next(
+        available_pkg = next(
             p for p in available if p.from_code == "en" and p.to_code == "es"
         )
-        path = package.download()
-        argostranslate.package.install_from_path(path)
+        download_path = available_pkg.download()
+        argostranslate.package.install_from_path(download_path)
+        pkg = next(
+            p
+            for p in argostranslate.package.get_installed_packages()
+            if p.from_code == "en" and p.to_code == "es"
+        )
 
-        installed = argostranslate.translate.get_installed_languages()
-        en_lang = next(l for l in installed if l.code == "en")
-        es_lang = next(l for l in installed if l.code == "es")
-
-    _translator = en_lang.get_translation(es_lang)
+    model_path = str(pkg.package_path / "model")
+    translator = ctranslate2.Translator(model_path, device="cpu")
+    _translator = (translator, pkg)
     return _translator
 
 
 def translate_to_spanish(text):
-    return get_translator().translate(text)
+    translator, pkg = get_translator_package()
+
+    sentences = _split_sentences(text)
+    tokenized = [pkg.tokenizer.encode(s) for s in sentences]
+
+    target_prefix = None
+    if pkg.target_prefix:
+        target_prefix = [[pkg.target_prefix]] * len(tokenized)
+
+    results = translator.translate_batch(
+        tokenized,
+        target_prefix=target_prefix,
+        replace_unknowns=True,
+        max_batch_size=32,
+        beam_size=4,
+    )
+
+    translated_sentences = []
+    for result in results:
+        tokens = result.hypotheses[0]
+        value = pkg.tokenizer.decode(tokens)
+        if pkg.target_prefix and value.startswith(pkg.target_prefix):
+            value = value[len(pkg.target_prefix):]
+        translated_sentences.append(value.strip())
+
+    return " ".join(translated_sentences)
 
 
 @app.route("/")

@@ -7,7 +7,11 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# argostranslate se instala sin sus deps (torch/stanza/sacremoses no se usan
+# aca: traducimos con ctranslate2 directo, ver app.py) para que la imagen
+# sea liviana y no se quede sin RAM en hosts free-tier.
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps argostranslate==1.9.6
 
 COPY . .
 
