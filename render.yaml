@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: transcriptor-reels
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: WHISPER_MODEL
+        value: tiny

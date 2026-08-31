@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transcriptor de Reels</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e8ec;
+    --muted: #8b90a0;
+    --accent: #7c5cff;
+    --accent-hover: #6a4ce0;
+    --error: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    padding: 48px 20px;
+  }
+  .container {
+    width: 100%;
+    max-width: 720px;
+  }
+  h1 {
+    font-size: 1.5rem;
+    margin-bottom: 4px;
+  }
+  p.subtitle {
+    color: var(--muted);
+    margin-top: 0;
+    margin-bottom: 28px;
+  }
+  .input-row {
+    display: flex;
+    gap: 10px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  button {
+    padding: 12px 20px;
+    border-radius: 8px;
+    border: none;
+    background: var(--accent);
+    color: white;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  button:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .status {
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    min-height: 1.2em;
+  }
+  .error {
+    color: var(--error);
+  }
+  .result {
+    margin-top: 28px;
+    display: none;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 10px 0;
+  }
+  .card p {
+    line-height: 1.6;
+    white-space: pre-wrap;
+    margin: 0;
+  }
+  .badge {
+    display: inline-block;
+    background: #2a2e38;
+    color: var(--muted);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    margin-left: 8px;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>Transcriptor de Reels de Instagram</h1>
+    <p class="subtitle">Pegá la URL de un reel y obtené su transcripción (y traducción si está en inglés).</p>
+
+    <div class="input-row">
+      <input type="text" id="url-input" placeholder="https://www.instagram.com/p/XXXXXXXXX/" autofocus>
+      <button id="submit-btn">Transcribir</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="result" id="result">
+      <div class="card">
+        <h2>Transcripción original <span class="badge" id="lang-badge"></span></h2>
+        <p id="transcript-text"></p>
+      </div>
+      <div class="card" id="translation-card" style="display: none;">
+        <h2>Traducción al español</h2>
+        <p id="translation-text"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const urlInput = document.getElementById('url-input');
+    const submitBtn = document.getElementById('submit-btn');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const transcriptText = document.getElementById('transcript-text');
+    const translationCard = document.getElementById('translation-card');
+    const translationText = document.getElementById('translation-text');
+    const langBadge = document.getElementById('lang-badge');
+
+    async function submit() {
+      const url = urlInput.value.trim();
+      if (!url) {
+        statusEl.textContent = 'Pegá una URL primero.';
+        statusEl.classList.add('error');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      resultEl.style.display = 'none';
+      statusEl.classList.remove('error');
+      statusEl.textContent = 'Descargando audio y transcribiendo... esto puede tardar un minuto.';
+
+      try {
+        const res = await fetch('/api/transcribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || 'Error desconocido.');
+        }
+
+        statusEl.textContent = '';
+        langBadge.textContent = data.language ? data.language.toUpperCase() : '';
+        transcriptText.textContent = data.transcript || '(sin texto detectado)';
+
+        if (data.translation) {
+          translationCard.style.display = 'block';
+          translationText.textContent = data.translation;
+        } else {
+          translationCard.style.display = 'none';
+          if (data.translation_error) {
+            statusEl.textContent = data.translation_error;
+          }
+        }
+
+        resultEl.style.display = 'block';
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.add('error');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    }
+
+    submitBtn.addEventListener('click', submit);
+    urlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+    });
+  </script>
+</body>
+</html>
